@@ -52,3 +52,45 @@ def test_api_end_to_end(engine):
         sig = "sha256=" + hmac.new(b"s3cret", body, hashlib.sha256).hexdigest()
         ok = c.post("/webhook/github", content=body, headers={"x-github-event": "ping", "x-hub-signature-256": sig})
         assert ok.json() == {"pong": True}
+
+
+def test_api_key_protects_everything_except_health_and_webhook(engine):
+    engine.s.api_key = "k-123"
+    with TestClient(create_app(engine=engine)) as c:
+        assert c.get("/health").status_code == 200  # platform health probes stay open
+        assert c.get("/status").status_code == 401
+        assert c.post("/query", json={"question": "refund_order"}).status_code == 401
+        assert c.get("/status", headers={"x-api-key": "wrong"}).status_code == 401
+        assert c.get("/status", headers={"x-api-key": "k-123"}).status_code == 200
+        r = c.post("/query", json={"question": "refund_order"}, headers={"x-api-key": "k-123"})
+        assert r.status_code == 200
+        # webhook is gated by its own HMAC, not the API key
+        assert c.post("/webhook/github", content=b"{}", headers={"x-github-event": "ping"}).status_code == 401
+
+
+def test_cors_only_for_configured_origins(engine):
+    engine.s.cors_origins = "https://myapp.vercel.app"
+    with TestClient(create_app(engine=engine)) as c:
+        ok = c.options("/query", headers={"origin": "https://myapp.vercel.app", "access-control-request-method": "POST",
+                                          "access-control-request-headers": "content-type,x-api-key"})
+        assert ok.headers["access-control-allow-origin"] == "https://myapp.vercel.app"
+        bad = c.options("/query", headers={"origin": "https://evil.example", "access-control-request-method": "POST"})
+        assert "access-control-allow-origin" not in bad.headers
+
+
+def test_auto_index_on_start(repo, tmp_path):
+    import time
+
+    from gitcontext.config import Settings
+    from gitcontext.engine import Engine
+
+    s = Settings(repo=str(repo), data_dir=tmp_path / "d2", embedding_provider="hash", reranker="lexical",
+                 llm_provider="none", qdrant_in_memory=True, auto_index_on_start=True, github_token=None)
+    eng = Engine(s, llm=None)
+    assert not eng.status()["indexed"]
+    with TestClient(create_app(engine=eng)) as c:
+        for _ in range(100):
+            if c.get("/status").json()["indexed"]:
+                break
+            time.sleep(0.1)
+        assert c.get("/status").json()["indexed"]

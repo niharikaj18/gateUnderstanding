@@ -1,5 +1,6 @@
 """Streamlit chat UI. Talks to the FastAPI backend: `gitcontext serve` then `gitcontext ui`."""
 import argparse
+import os
 import sys
 
 import httpx
@@ -11,7 +12,8 @@ args, _ = p.parse_known_args(sys.argv[1:])
 
 st.set_page_config(page_title="GitContext", page_icon="🧭", layout="wide")
 api = st.sidebar.text_input("API URL", args.api)
-client = httpx.Client(base_url=api, timeout=180)
+api_key = st.sidebar.text_input("API key (if the backend requires one)", os.environ.get("GITCONTEXT_API_KEY", ""), type="password")
+client = httpx.Client(base_url=api, timeout=180, headers={"x-api-key": api_key} if api_key else {})
 
 ICON = {"code": "🧩", "doc": "📄", "commit": "🔀", "pr": "🔃", "issue": "🐞", "incident": "🚨"}
 

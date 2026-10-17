@@ -1,0 +1,9 @@
+{
+  "name": "gitcontext-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Static chat UI + serverless proxy for GitContext, deployable on Vercel (Root Directory: web)",
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/proxy.test.mjs test/frontend.test.mjs" },
+  "devDependencies": { "jsdom": "^25.0.0" }
+}
