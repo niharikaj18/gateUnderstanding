@@ -15,8 +15,17 @@ class Settings(BaseSettings):
     data_dir: Path = Path(".gitcontext")
     github_token: str | None = Field(default=None, validation_alias="GITHUB_TOKEN")
 
+    # storage backend
+    #   local  : Qdrant (vectors) + SQLite FTS5 (BM25, chunks, manifest) - best for a single server/laptop
+    #   qdrant : everything in Qdrant (dense + sparse BM25-style vectors, chunk payloads, manifest, meta);
+    #            stateless clients, so the query side can run in serverless functions (see vercel/)
+    backend: str = "local"
+
     # models
-    embedding_provider: str = "fastembed"  # fastembed | openai | hash
+    embedding_provider: str = "fastembed"  # fastembed | voyage | openai | hash
+    embedding_dim: int | None = None  # voyage only (output_dimension)
+    model_cache_dir: str | None = None  # where fastembed caches models (/tmp/... on serverless)
+    voyage_api_key: str | None = Field(default=None, validation_alias="VOYAGE_API_KEY")
     embedding_model: str = "BAAI/bge-small-en-v1.5"
     reranker: str = "cross-encoder"  # cross-encoder | lexical | none
     reranker_model: str = "Xenova/ms-marco-MiniLM-L-6-v2"
@@ -30,6 +39,7 @@ class Settings(BaseSettings):
     qdrant_url: str | None = None
     qdrant_api_key: str | None = None
     qdrant_in_memory: bool = False
+    collection_name: str | None = None  # explicit collection; set the SAME value for the indexer and the serverless reader
 
     # chunking / ingestion
     max_chunk_chars: int = 2400
@@ -53,6 +63,8 @@ class Settings(BaseSettings):
     api_key: str | None = None  # if set, every endpoint except /health and the HMAC webhook needs `x-api-key`
     cors_origins: str = ""  # comma-separated origins allowed to call the API from a browser
     auto_index_on_start: bool = False  # index in the background on boot if the repo isn't indexed yet
+
+    rate_limit_per_min: int = 20  # serverless: best-effort per-IP limit on /api/query (per warm instance)
 
     # freshness
     auto_sync_seconds: int = 0
@@ -80,12 +92,17 @@ class Settings(BaseSettings):
 
     @property
     def collection(self) -> str:
-        return f"gitcontext_{self.repo_slug}"[:100]
+        return self.collection_name or f"gitcontext_{self.repo_slug}"[:100]
 
     @property
     def github_slug(self) -> str | None:
         m = re.search(r"github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$", self.repo)
-        return f"{m.group(1)}/{m.group(2)}" if m else None
+        if m:
+            return f"{m.group(1)}/{m.group(2)}"
+        bare = re.fullmatch(r"([\w.-]+)/([\w.-]+)", self.repo)  # "owner/name" (and not a local directory)
+        if bare and not Path(self.repo).expanduser().exists():
+            return f"{bare.group(1)}/{bare.group(2)}"
+        return None
 
 
 def get_settings(**overrides) -> Settings:

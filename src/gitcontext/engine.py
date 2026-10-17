@@ -10,6 +10,7 @@ from .config import Settings
 from .index.embeddings import make_embedder
 from .index.indexer import Indexer
 from .index.lexical import LexicalStore
+from .index.qdrant_unified import QdrantUnified
 from .index.vectorstore import make_store
 from .ingest.repo import GitRepo
 from .llm import make_llm
@@ -26,8 +27,14 @@ class Engine:
         settings.work_dir.mkdir(parents=True, exist_ok=True)
         self.repo = GitRepo.open_or_clone(settings.repo, settings.work_dir, settings.github_token)
         self.embedder = embedder or make_embedder(settings)
-        self.store = store or make_store(settings)
-        self.lex = lex or LexicalStore(settings.sqlite_path)
+        if settings.backend == "qdrant":
+            # one object plays both roles: vectors + BM25-style sparse + chunks + manifest all live in Qdrant
+            self.store = self.lex = store or QdrantUnified(
+                settings.collection, url=settings.qdrant_url, api_key=settings.qdrant_api_key,
+                path=str(settings.qdrant_path), in_memory=settings.qdrant_in_memory)
+        else:
+            self.store = store or make_store(settings)
+            self.lex = lex or LexicalStore(settings.sqlite_path)
         self.reranker = make_reranker(settings) if reranker == "auto" else reranker
         self.llm = make_llm(settings) if llm == "auto" else llm
         self.indexer = Indexer(settings, self.repo, self.embedder, self.store, self.lex)

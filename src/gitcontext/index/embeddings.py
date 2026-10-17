@@ -25,11 +25,11 @@ class Embedder(Protocol):
 
 
 class FastEmbedder:
-    def __init__(self, model: str):
+    def __init__(self, model: str, cache_dir: str | None = None):
         from fastembed import TextEmbedding
 
         self.name = f"fastembed:{model}"
-        self._m = TextEmbedding(model)
+        self._m = TextEmbedding(model, cache_dir=cache_dir) if cache_dir else TextEmbedding(model)
         self.dim = len(next(iter(self._m.embed(["probe"]))))
 
     def embed_documents(self, texts):
@@ -59,6 +59,79 @@ class OpenAIEmbedder:
         return self._c.embeddings.create(model=self._model, input=[text[:8000]]).data[0].embedding
 
 
+class VoyageEmbedder:
+    """Voyage AI over plain HTTP (no SDK; light enough for serverless). `voyage-code-3` is code-specialised.
+    Free accounts without a payment method are limited to 3 requests/min, so we batch and retry on 429."""
+
+    URL = "https://api.voyageai.com/v1/embeddings"
+
+    def __init__(self, model: str, api_key: str | None, dim: int | None = None, transport=None):
+        import httpx
+
+        if not api_key:
+            raise ValueError("VOYAGE_API_KEY is required for the voyage embedding provider")
+        self.name = f"voyage:{model}" + (f":{dim}" if dim else "")
+        self._model, self._dim_req = model, dim
+        self._http = httpx.Client(timeout=60, headers={"Authorization": f"Bearer {api_key}"}, transport=transport)
+        self.dim = len(self.embed_query("probe"))
+
+    def _call(self, texts: list[str], input_type: str) -> list[list[float]]:
+        import time
+
+        body = {"input": texts, "model": self._model, "input_type": input_type}
+        if self._dim_req:
+            body["output_dimension"] = self._dim_req
+        for attempt in range(8):
+            r = self._http.post(self.URL, json=body)
+            if r.status_code == 429 or r.status_code >= 500:
+                time.sleep(min(float(r.headers.get("retry-after", 0)) or 2 ** attempt * 3, 65))
+                continue
+            r.raise_for_status()
+            return [d["embedding"] for d in sorted(r.json()["data"], key=lambda d: d["index"])]
+        raise RuntimeError("Voyage API kept rate-limiting; add a payment method (free tokens still apply) or slow down")
+
+    def embed_documents(self, texts):
+        out: list[list[float]] = []
+        for i in range(0, len(texts), 64):
+            out += self._call([t[:6000] for t in texts[i : i + 64]], "document")
+        return out
+
+    def embed_query(self, text):
+        return self._call([text[:6000]], "query")[0]
+
+
+class LazyEmbedder:
+    """Defers loading a heavy model until first use (serverless cold starts) and lets it be warmed in a thread."""
+
+    def __init__(self, factory, name_hint: str):
+        import threading
+
+        self._factory, self._inner, self._lock, self.name_hint = factory, None, threading.Lock(), name_hint
+
+    def _get(self):
+        with self._lock:
+            if self._inner is None:
+                self._inner = self._factory()
+            return self._inner
+
+    @property
+    def name(self):
+        return self._inner.name if self._inner else self.name_hint
+
+    @property
+    def dim(self):
+        return self._get().dim
+
+    def embed_documents(self, texts):
+        return self._get().embed_documents(texts)
+
+    def embed_query(self, text):
+        return self._get().embed_query(text)
+
+    def warm(self):
+        self._get()
+
+
 class HashEmbedder:
     """Signed feature hashing over identifier-expanded tokens. Lexical-ish, deterministic, instant."""
 
@@ -86,4 +159,7 @@ def make_embedder(s: Settings) -> Embedder:
     if s.embedding_provider == "openai":
         model = s.embedding_model if s.embedding_model.startswith("text-embedding") else "text-embedding-3-small"
         return OpenAIEmbedder(model, s.openai_api_key, s.openai_base_url)
-    return FastEmbedder(s.embedding_model)
+    if s.embedding_provider == "voyage":
+        model = s.embedding_model if s.embedding_model.startswith("voyage") else "voyage-code-3"
+        return VoyageEmbedder(model, s.voyage_api_key, s.embedding_dim)
+    return FastEmbedder(s.embedding_model, s.model_cache_dir)

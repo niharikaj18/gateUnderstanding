@@ -193,9 +193,9 @@ async function refreshStatus() {
     const running = status.job && status.job.running;
     if (running) { pill.className = "pill warn"; pill.textContent = "indexing…"; }
     else if (!status.indexed) { pill.className = "pill bad"; pill.textContent = "not indexed yet"; }
-    else if (status.stale) { pill.className = "pill warn"; pill.textContent = `stale · ${status.stale_files.total} changed file(s)`; }
+    else if (status.stale) { pill.className = "pill warn"; pill.textContent = status.stale_files.total == null ? "stale · new commits" : `stale · ${status.stale_files.total} changed file(s)`; }
     else { pill.className = "pill ok"; pill.textContent = `fresh @ ${status.indexed_commit.slice(0, 7)}`; }
-    $("sync").hidden = !(status.indexed && status.stale && !running);
+    $("sync").hidden = !(status.indexed && status.stale && !running && status.can_sync !== false);
     pill.title = Object.entries(status.chunks || {}).map(([k, v]) => `${k}: ${v}`).join(" · ");
   } catch (e) {
     pill.className = "pill bad"; pill.textContent = "backend unreachable"; pill.title = e.message;

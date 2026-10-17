@@ -59,6 +59,12 @@ test("stale index shows warning pill and sync button", async () => {
   assert.equal(d.getElementById("sync").hidden, false);
 });
 
+test("serverless status: no sync button, wording when file count is unknown", async () => {
+  const { d } = await boot({ status: { ...STATUS, stale: true, stale_files: { total: null }, can_sync: false } });
+  assert.match(d.getElementById("status").textContent, /stale · new commits/);
+  assert.equal(d.getElementById("sync").hidden, true);
+});
+
 test("unreachable backend is surfaced", async () => {
   const { d } = await boot({ status: new Error("down") });
   assert.match(d.getElementById("status").textContent, /unreachable/);

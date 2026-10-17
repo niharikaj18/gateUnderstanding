@@ -1,8 +1,0 @@
-diff a/Dockerfile b/Dockerfile	(rejected hunks)
-@@ -10,4 +10,5 @@ TextEmbedding('BAAI/bge-small-en-v1.5'); TextCrossEncoder('Xenova/ms-marco-MiniL
- ENV GITCONTEXT_DATA_DIR=/data
- VOLUME /data
- EXPOSE 8000 8501
--CMD ["uvicorn", "gitcontext.api:app_factory", "--factory", "--host", "0.0.0.0", "--port", "8000"]
-+# $PORT is injected by Render/Railway/Fly/Cloud Run; defaults to 8000 locally
-+CMD ["sh", "-c", "uvicorn gitcontext.api:app_factory --factory --host 0.0.0.0 --port ${PORT:-8000}"]

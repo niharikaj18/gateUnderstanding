@@ -75,16 +75,18 @@ def _fts_quote(t: str) -> str:
     return '"' + t.replace('"', '""') + '"'
 
 
-def build_match(profile: QueryProfile) -> str | None:
-    toks: list[str] = []
-    for t in profile.terms:
-        toks.append(t)
+def query_tokens(profile: QueryProfile) -> list[str]:
+    """Terms used for keyword retrieval: query words, identifiers, and identifier sub-tokens."""
+    toks: list[str] = list(profile.terms)
     for ident in profile.identifiers:
         for part in re.split(r"[.]", ident):
             toks.append(part.lower())
             toks.extend(split_identifier(part))
-    toks = [t for t in dict.fromkeys(toks) if t and t not in STOP]
-    return " OR ".join(_fts_quote(t) for t in toks[:40]) or None
+    return [t for t in dict.fromkeys(toks) if t and t not in STOP][:40]
+
+
+def build_match(profile: QueryProfile) -> str | None:
+    return " OR ".join(_fts_quote(t) for t in query_tokens(profile)) or None
 
 
 def build_phrase_match(profile: QueryProfile) -> str | None:
@@ -238,14 +240,20 @@ class LexicalStore:
         return self._run(build_phrase_match(profile), k, source_types, path_prefix)
 
     def symbol_exact(self, profile: QueryProfile, k: int, source_types=None, path_prefix=None):
-        """Chunks whose symbol equals / ends with a queried identifier (exact function/class name)."""
-        names = [i.split(".")[-1] for i in profile.identifiers]
+        """Chunks whose symbol equals / ends with a queried identifier. A qualified name
+        (`Option.get_help_record`) ranks its exact match before same-named methods of other classes."""
+        names = list(dict.fromkeys(i.split(".")[-1] for i in profile.identifiers))
         if not names:
             return []
+        qualified = list(dict.fromkeys(i for i in profile.identifiers if "." in i))
         fsql, fargs = self._filters(source_types, path_prefix)
         conds = " OR ".join(["c.symbol = ? OR c.symbol LIKE ?"] * len(names))
         args = [x for n in names for x in (n, f"%.{n}")]
+        order, oargs = "", []
+        if qualified:
+            order = f" ORDER BY CASE WHEN c.symbol IN ({','.join('?' * len(qualified))}) THEN 0 ELSE 1 END"
+            oargs = qualified
         with self.lock:
             rows = self.db.execute(
-                f"SELECT c.id FROM chunks c WHERE ({conds}){fsql} LIMIT ?", [*args, *fargs, k]).fetchall()
+                f"SELECT c.id FROM chunks c WHERE ({conds}){fsql}{order} LIMIT ?", [*args, *fargs, *oargs, k]).fetchall()
         return [(r[0], 1.0) for r in rows]

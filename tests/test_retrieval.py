@@ -69,3 +69,25 @@ def test_rerank_blend_controls_how_much_reranker_overrides(engine):
     engine.s.rerank_blend = 1.0
     full = [h.chunk.id for h in engine.search(q, rerank=True, top_k=50).hits]
     assert full == base[::-1]  # blend 1 => reranker fully decides
+
+
+def test_qualified_symbol_beats_same_named_methods(repo, tmp_path, backend):
+    """Regression: `Option.get_help_record` must rank Option's method, not Argument's, when both exist."""
+    from conftest import git
+    from gitcontext.config import Settings
+    from gitcontext.engine import Engine
+
+    (repo / "pkg" / "forms.py").write_text(
+        "class Option:\n    def get_help_record(self):\n        return 'option help ' * 5\n\n    def other(self):\n        return 1\n\n\n"
+        "class Argument:\n    def get_help_record(self):\n        return 'argument help ' * 5\n\n    def other(self):\n        return 2\n")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-qm", "forms")
+    e = Engine(Settings(repo=str(repo), data_dir=tmp_path / "d3", embedding_provider="hash", reranker="none",
+                        llm_provider="none", github_token=None, max_chunk_chars=60, **backend), llm=None)
+    e.index(github=False)
+    syms = {c.symbol for c in e.lex.iter_chunks("code")} if hasattr(e.lex, "iter_chunks") else set()
+    assert {"Option.get_help_record", "Argument.get_help_record"} <= syms  # split into per-method chunks
+    for cls in ("Option", "Argument"):
+        hit = e.search(f"Where is `{cls}.get_help_record` defined?", top_k=3).hits[0]
+        assert hit.chunk.symbol == f"{cls}.get_help_record"
+        assert hit.ranks.get("symbol") == 1

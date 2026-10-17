@@ -45,7 +45,7 @@ flowchart LR
 ## Quickstart
 
 ```bash
-pip install -e ".[anthropic]"          # or: pip install -e ".[openai]"
+pip install -e ".[local,server,ui,anthropic]"   # core + local ONNX models + `serve` + `ui` + Claude (or .[openai])
 cp .env.example .env                   # set GITCONTEXT_REPO, ANTHROPIC_API_KEY, (GITHUB_TOKEN)
 
 gitcontext index                       # first run downloads two small ONNX models (~150 MB)
@@ -106,7 +106,61 @@ vectors and BM25 rows are removed; chunk IDs are deterministic so re-indexing is
 **Answer grounding.** The prompt requires `[n]` citations to numbered evidence blocks that include author/date/commit.
 After generation, citations are validated against what was actually retrieved; invalid ones raise a warning.
 
-## Deploy: Vercel frontend + hosted backend
+## All-Vercel deployment (free tier friendly)
+
+Everything runs on managed free tiers with no server of your own: **Qdrant Cloud** holds the index,
+**GitHub Actions** builds and refreshes it, **Vercel** serves the UI and a stateless Python function that answers.
+
+```
+ git push ─► GitHub Action (.github/workflows/index.yml)          Browser
+              gitcontext sync  (local ONNX embeddings, free)        │
+                      │ writes vectors + BM25-style sparse vectors  ▼
+                      ▼ + chunks + manifest + metadata       Vercel project  (Root Directory: vercel/)
+              Qdrant Cloud  ◄──────────── reads ───────────  public/index.html + api/index.py (FastAPI)
+              (1 GB free cluster)                              embeds the question with the same ONNX model,
+                                                               hybrid search, optional Claude answer
+```
+
+How it differs from the server version: the SQLite FTS5 index is replaced by `GITCONTEXT_BACKEND=qdrant`, where each chunk
+is a single Qdrant point (dense vector + sparse BM25-style vector with server-side IDF + the full chunk as payload +
+filterable symbol/path fields). The manifest used for staleness and the index metadata (indexed commit, embedder…) live in
+Qdrant too, so any client can read freshness. There is no cross-encoder in the function (it measured no gain, see
+Evaluation). Indexing and the write path never run on Vercel.
+
+**Setup (about 15 minutes of clicking, then waiting for the first index):**
+
+1. **Qdrant Cloud:** create a free cluster at cloud.qdrant.io (no card, per Qdrant's pricing page) and copy the cluster URL and an API key.
+2. **GitHub, in this repo → Settings → Secrets and variables → Actions:**
+   * Secrets: `QDRANT_URL`, `QDRANT_API_KEY`. Optional `GH_PAT` (only to index private or other people's repos).
+   * Variables: `GITCONTEXT_INDEXING` = `true` (the workflow is opt-in), optionally `GITCONTEXT_REPO` (defaults to this repo) and
+     `GITCONTEXT_COLLECTION_NAME` (default `gitcontext`).
+   * Run **Actions → index-to-qdrant → Run workflow**. The first run does a full index (we measured ~16 min for 2,248 chunks on one
+     CPU core; the model is cached afterwards). From then on every push syncs only what changed, and a 6-hourly run also picks up PR/issue updates.
+3. **Vercel:** import the repo, set **Root Directory = `vercel`** (Framework Preset: *Other*), add env vars, deploy:
+
+   | Vercel env var | Value |
+   |---|---|
+   | `GITCONTEXT_QDRANT_URL`, `GITCONTEXT_QDRANT_API_KEY` | from step 1 |
+   | `GITCONTEXT_COLLECTION_NAME` | same as in the workflow (default `gitcontext`) |
+   | `GITCONTEXT_REPO` | `owner/name`, used to compare the indexed commit with the current HEAD (staleness badge) |
+   | `GITHUB_TOKEN` | optional: avoids GitHub's anonymous API limit for the HEAD check |
+   | `ANTHROPIC_API_KEY` | optional: written answers. Without it you get the top evidence with citations |
+
+4. **Turn on Vercel Deployment Protection**, or anyone with the URL can spend your Anthropic credits. A best-effort per-IP
+   limit (`GITCONTEXT_RATE_LIMIT_PER_MIN`, default 20) exists but is per warm function instance, so it is not a real quota.
+
+`vercel/` is **generated**: `python scripts/build_vercel.py` copies `src/gitcontext` and `web/index.html` into it (Vercel can only
+deploy files inside the Root Directory). CI fails if it is stale (`--check`).
+
+**What was and wasn't verified (see "Known limitations" too).** Verified here: the full test suite against in-memory Qdrant *and* a
+real Qdrant 1.19 server; a stateless reader seeing what the indexer wrote and noticing a new commit; the `vercel/` folder running in
+an isolated virtualenv containing only `vercel/requirements.txt`, with an empty model cache, against a real Qdrant server and the real
+Click index (cold first query 1.9 s including the model download, warm ~35 ms, ~350 MB RSS; localhost numbers, so Qdrant Cloud
+network latency comes on top). **Not verified:** an actual Vercel deployment (bundle size ~290 MB of dependencies against Vercel's
+documented 500 MB Python limit; `/tmp` model download and `api/index.py` + rewrite routing behave as documented, not observed),
+Qdrant Cloud itself (free-tier suspension/idle policies, latency), and the GitHub Action running on GitHub.
+
+## Alternative: Vercel frontend + separately hosted backend
 
 Vercel runs the **web UI and a thin proxy**; the Python backend needs a persistent disk (SQLite index, Qdrant data,
 the cloned repo), long-running indexing and a background watcher, none of which fit serverless functions, so it
@@ -181,10 +235,23 @@ Raw artifacts: [`docs/eval-click/`](docs/eval-click).
 
 | config | R@1 | R@3 | R@5 | R@10 | P@5 | MRR | nDCG@10 | p50 ms | p95 ms |
 |---|---|---|---|---|---|---|---|---|---|
-| dense | 0.617 | 0.817 | 0.900 | 0.917 | 0.180 | 0.730 | 0.777 | 25 | 32 |
-| bm25 | 0.850 | 0.967 | 1.000 | 1.000 | 0.200 | 0.914 | 0.936 | 3 | 6 |
-| **hybrid (RRF)** | **0.867** | **0.983** | 1.000 | 1.000 | 0.200 | **0.926** | **0.945** | 26 | 34 |
-| hybrid + rerank (pure cross-encoder) | 0.733 | 0.883 | 0.933 | 0.967 | 0.187 | 0.818 | 0.854 | 3636 | 5038 |
+| dense | 0.617 | 0.817 | 0.900 | 0.917 | 0.180 | 0.730 | 0.777 | 24 | 29 |
+| lexical (BM25 + phrase + symbol) | 0.817 | 0.967 | 1.000 | 1.000 | 0.200 | 0.897 | 0.923 | 4 | 8 |
+| **hybrid (RRF)**: SQLite + Qdrant backend | **0.833** | **0.983** | **1.000** | 1.000 | 0.200 | **0.910** | **0.933** | 27 | 36 |
+| hybrid (RRF): all-in-Qdrant backend (real server) | 0.817 | 1.000 | 1.000 | 1.000 | 0.200 | 0.908 | 0.932 | 38 | 73 |
+| *hybrid + pure cross-encoder rerank (measured earlier, see below)* | *0.733* | *0.883* | *0.933* | *0.967* | *0.187* | *0.818* | *0.854* | *3636* | *5038* |
+
+The two hybrid rows use identical embeddings (the all-in-Qdrant collection was loaded from the same vectors) and differ only
+in how the keyword side is implemented (SQLite FTS5 BM25 vs. client-computed BM25-style sparse vectors with Qdrant's IDF), so the
+0.002 MRR gap is the cost of moving the keyword index into Qdrant: a difference of one rank on a couple of questions.
+Raw reports: [`docs/eval-click/local-backend`](docs/eval-click/local-backend), [`docs/eval-click/qdrant-backend`](docs/eval-click/qdrant-backend).
+Latencies are single-core, localhost; hybrid p50 on the all-in-Qdrant row is higher because it makes more calls to the server.
+
+*Changed after the first measurement:* a query containing a fully qualified name (`Option.get_help_record`) used to return a
+same-named method of another class; the symbol ranker now ranks the exact qualified match first and is weighted higher in that case. On this
+set that fixed one question and cost one (a history question that mentions a symbol), taking hybrid MRR from 0.926 to 0.910, which is within the
+noise of 60 questions and is kept because the fixed behaviour is the correct one for a user who typed a qualified name. The
+rerank row and the blend experiment below were measured *before* this change.
 
 (P@5 is capped at 0.2 because each question has one gold chunk.)
 
@@ -223,10 +290,12 @@ counts as a miss. Treat the ablation as a regression harness and relative compar
 ```
 src/gitcontext/
   ingest/       chunker.py  repo.py  github.py
-  index/        embeddings.py  vectorstore.py  lexical.py  indexer.py
+  index/        embeddings.py  vectorstore.py  lexical.py  indexer.py  qdrant_unified.py  sparse.py
   retrieval/    hybrid.py  rerank.py
   evaluation/   metrics.py  dataset.py  runner.py
-  rag.py llm.py engine.py api.py cli.py ui/streamlit_app.py
+  rag.py llm.py engine.py api.py serverless.py schemas.py cli.py ui/streamlit_app.py
+vercel/         GENERATED all-Vercel project (python scripts/build_vercel.py): api/index.py + public/ + gitcontext/ copy
+scripts/        build_vercel.py
 web/            Vercel frontend: index.html + api/[...path].js proxy + node tests
 render.yaml     backend blueprint (Render)
 tests/          chunking · retrieval · freshness (git-level) · API/webhook · GitHub (mocked) · metrics
@@ -243,6 +312,11 @@ tests/          chunking · retrieval · freshness (git-level) · API/webhook ·
 
 ## Known limitations
 
+* **All-in-Qdrant keyword search is BM25-style, not true BM25.** Term weights are computed client-side with length normalisation against a
+  constant average length (120 tokens) and Qdrant supplies IDF; the exact-phrase ranker re-checks only the top 100 sparse candidates. On the Click
+  benchmark it matched the SQLite FTS5 backend within one rank on a couple of questions (see Evaluation), but it is an approximation.
+* The serverless function has no cross-encoder reranker and relies on an in-process, per-instance rate limit; treat Deployment Protection as the real access control.
+* Voyage embeddings (optional) are throttled to 3 requests/min on accounts without a payment method (free tokens still apply); the default local model has no such limit.
 * Brace-language chunking is heuristic (declaration regexes + brace depth), not a full parser; Python is exact.
 * PR/issue ingestion needs `GITHUB_TOKEN` for anything beyond a toy rate limit (60 req/h), and fetches a bounded
   number of recent items (`github_max_prs`, `github_max_issues`).
@@ -250,4 +324,3 @@ tests/          chunking · retrieval · freshness (git-level) · API/webhook ·
 * The synthetic eval set has lexical leakage for `symbol`/`doc`/`history` questions by construction; use it for regression
   tracking and ablations, and add hand-written questions for absolute quality claims.
 * Answer-level metrics that use an LLM judge are only as good as the judge; citation *support* is a lexical proxy.
-# gateUnderstanding

@@ -11,22 +11,23 @@ requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
   "fastapi>=0.110",
-  "uvicorn[standard]>=0.29",
   "qdrant-client>=1.10",
-  "fastembed>=0.3",
   "httpx>=0.27",
   "pydantic>=2.6",
   "pydantic-settings>=2.2",
   "typer>=0.12",
   "rich>=13",
   "numpy>=1.26",
-  "streamlit>=1.33",
 ]
 
 [project.optional-dependencies]
+local = ["fastembed>=0.3"]            # local ONNX embeddings + cross-encoder (default provider)
+server = ["uvicorn[standard]>=0.29"]  # `gitcontext serve`
+ui = ["streamlit>=1.33"]              # `gitcontext ui`
 anthropic = ["anthropic>=0.40"]
 openai = ["openai>=1.30"]
-dev = ["pytest>=8", "ruff>=0.4"]
+dev = ["pytest>=8", "ruff>=0.4", "pyyaml>=6"]
+all = ["gitcontext[local,server,ui,anthropic,openai]"]
 
 [project.scripts]
 gitcontext = "gitcontext.cli:app"

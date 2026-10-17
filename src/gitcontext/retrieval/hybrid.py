@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from ..config import Settings
@@ -62,6 +63,28 @@ class Retriever:
         rankings: dict[str, list[str]] = {}
         prof = profile_query(query)
 
+        # Over a network (Qdrant Cloud) each ranker is a round trip, so run them concurrently.
+        parallel = bool(getattr(self.store, "remote", False)) and self.lex is self.store
+        pool = ThreadPoolExecutor(max_workers=3) if parallel and mode != "dense" else None
+
+        def timed(name, fn):
+            t0 = time.perf_counter()
+            res = [i for i, _ in fn()]
+            t[name] = (time.perf_counter() - t0) * 1000
+            return res
+
+        lex_jobs = {}
+        if mode in ("bm25", "hybrid"):
+            jobs = {"bm25": lambda: self.lex.bm25(prof, s.retrieve_k, source_types, path_prefix),
+                    "phrase": lambda: self.lex.phrase(prof, s.retrieve_k, source_types, path_prefix),
+                    "symbol": lambda: self.lex.symbol_exact(prof, 10, source_types, path_prefix)}
+            if pool:
+                lex_jobs = {n: pool.submit(timed, f"lex_{n}", fn) for n, fn in jobs.items()}
+            else:
+                t0 = time.perf_counter()
+                for n, fn in jobs.items():
+                    rankings[n] = [i for i, _ in fn()]
+                t["lexical"] = (time.perf_counter() - t0) * 1000
         if mode in ("dense", "hybrid"):
             t0 = time.perf_counter()
             qv = self.embedder.embed_query(query)
@@ -69,16 +92,16 @@ class Retriever:
             t0 = time.perf_counter()
             rankings["dense"] = [i for i, _ in self.store.search(qv, s.retrieve_k, source_types, path_prefix)]
             t["dense"] = (time.perf_counter() - t0) * 1000
-        if mode in ("bm25", "hybrid"):
-            t0 = time.perf_counter()
-            rankings["bm25"] = [i for i, _ in self.lex.bm25(prof, s.retrieve_k, source_types, path_prefix)]
-            rankings["phrase"] = [i for i, _ in self.lex.phrase(prof, s.retrieve_k, source_types, path_prefix)]
-            rankings["symbol"] = [i for i, _ in self.lex.symbol_exact(prof, 10, source_types, path_prefix)]
-            t["lexical"] = (time.perf_counter() - t0) * 1000
+        for n, fut in lex_jobs.items():
+            rankings[n] = fut.result()
+        if pool:
+            pool.shutdown()
+            t["lexical"] = max(t.pop(f"lex_{n}") for n in lex_jobs)
 
-        # Exact-match signals (error text, identifiers) get extra weight when the query contains them.
+        # A qualified name like `Option.get_help_record` is an unambiguous request: trust the symbol ranker.
+        qualified = any("." in i for i in prof.identifiers)
         weights = {"dense": 1.0, "bm25": 1.0 + (0.5 if prof.exact_signal else 0.0),
-                   "phrase": 2.0, "symbol": 1.5}
+                   "phrase": 2.0, "symbol": 4.0 if qualified else 1.5}
         t0 = time.perf_counter()
         fused, ranks = rrf({k: v for k, v in rankings.items() if v}, weights)
         order = sorted(fused, key=fused.get, reverse=True)

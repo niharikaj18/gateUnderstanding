@@ -64,8 +64,9 @@ class Indexer:
         for i in range(0, len(chunks), B):
             batch = chunks[i : i + B]
             vecs = self.embedder.embed_documents([c.embed_text() for c in batch])
-            self.store.upsert([c.id for c in batch], vecs, [c.payload() for c in batch])
-            self.lex.upsert(batch)
+            self.store.upsert([c.id for c in batch], vecs, [c.payload() for c in batch], chunks=batch)
+            if self.lex is not self.store:  # all-in-Qdrant backend already stored text + sparse vectors
+                self.lex.upsert(batch)
 
     def _index_files(self, files: dict[str, tuple[str, int]], metas: dict[str, FileMeta], head: str,
                      progress: Progress | None, report: SyncReport) -> None:
@@ -144,6 +145,7 @@ class Indexer:
         t0, r = time.time(), SyncReport()
         if rebuild:
             self.store.reset()
+            self.store.ensure(self.embedder.dim)
             for st in ("code", "doc", "incident", "commit", "pr", "issue"):
                 self.lex.delete_source(st)
             for p in list(self.lex.manifest()):
@@ -181,6 +183,12 @@ class Indexer:
         """Incremental re-index of only what changed since the last run."""
         t0, r = time.time(), SyncReport()
         self.store.ensure(self.embedder.dim)
+        if not self.lex.get_meta("indexed_commit"):  # nothing indexed yet: sync == first full index
+            self.repo.pull()
+            return self.index_all(github=github, progress=progress)
+        prev = self.lex.get_meta("embedder")
+        if prev and prev != self.embedder.name:
+            raise RuntimeError(f"Index was built with {prev} but current embedder is {self.embedder.name}; use `index --rebuild`")
         r.pulled = self.repo.pull()
         head = r.head = self.repo.head()
         added, modified, deleted = self.stale_files()

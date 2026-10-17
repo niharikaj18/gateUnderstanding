@@ -14,26 +14,11 @@ from contextlib import asynccontextmanager
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
 
 from . import __version__
 from .config import Settings
 from .engine import Engine
-
-
-class QueryRequest(BaseModel):
-    question: str = Field(min_length=2, max_length=2000)
-    top_k: int = Field(8, ge=1, le=30)
-    mode: str = Field("hybrid", pattern="^(hybrid|dense|bm25)$")
-    rerank: bool = True
-    source_types: list[str] | None = None
-    path_prefix: str | None = None
-
-
-class IndexRequest(BaseModel):
-    rebuild: bool = False
-    history: bool = True
-    github: bool = True
+from .schemas import IndexRequest, QueryRequest
 
 
 def create_app(engine: Engine | None = None, settings: Settings | None = None) -> FastAPI:

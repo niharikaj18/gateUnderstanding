@@ -1,0 +1,40 @@
+# Keeps the Qdrant Cloud index fresh for the all-Vercel deployment (see README: "All-Vercel deployment").
+#   push to main      -> incremental sync (only changed files + new commits)
+#   every 6 hours     -> also picks up PR / issue / incident updates, and re-targets other repos
+#   manual run        -> optionally rebuild from scratch
+# Opt-in: nothing runs until you add the repository VARIABLE GITCONTEXT_INDEXING=true and the secrets below.
+name: index-to-qdrant
+on:
+  push: { branches: [main] }
+  schedule: [{ cron: "23 */6 * * *" }]
+  workflow_dispatch:
+    inputs:
+      rebuild: { description: "Drop and rebuild the whole index", type: boolean, default: false }
+concurrency: { group: gitcontext-index, cancel-in-progress: false }
+permissions: { contents: read }
+
+jobs:
+  index:
+    if: ${{ vars.GITCONTEXT_INDEXING == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GITCONTEXT_BACKEND: qdrant
+      GITCONTEXT_QDRANT_URL: ${{ secrets.QDRANT_URL }}
+      GITCONTEXT_QDRANT_API_KEY: ${{ secrets.QDRANT_API_KEY }}
+      GITCONTEXT_COLLECTION_NAME: ${{ vars.GITCONTEXT_COLLECTION_NAME || 'gitcontext' }}   # must equal the Vercel setting
+      GITCONTEXT_REPO: ${{ vars.GITCONTEXT_REPO || github.repository }}                       # repo to index (owner/name or URL)
+      GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}                             # PAT only needed for other/private repos
+      GITCONTEXT_RERANKER: none
+      GITCONTEXT_LLM_PROVIDER: none
+      GITCONTEXT_MODEL_CACHE_DIR: ${{ runner.temp }}/fastembed
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - uses: actions/cache@v4
+        with: { path: "${{ runner.temp }}/fastembed", key: fastembed-bge-small-en-v1.5 }
+      - run: pip install ".[local]"
+      - name: Index (first run = full index, afterwards incremental)
+        run: |
+          if [ "${{ inputs.rebuild }}" = "true" ]; then gitcontext index --rebuild; else gitcontext sync; fi
