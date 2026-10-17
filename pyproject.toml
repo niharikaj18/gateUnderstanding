@@ -45,5 +45,4 @@ line-length = 110
 select = ["E", "F", "W"]
 ignore = ["E501", "E701", "E702", "E731", "E741"]
 
-[tool.vercel]
-entrypoint = "src.gitcontext.cli:app"
+
