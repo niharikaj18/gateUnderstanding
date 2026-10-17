@@ -36,3 +36,10 @@ def test_rate_limit_degrades_gracefully():
     gh = GitHubClient("o/r", transport=httpx.MockTransport(
         lambda r: httpx.Response(403, headers={"x-ratelimit-remaining": "0"})))
     assert gh.fetch(None, 10, 10, []) == []
+
+
+def test_rate_limit_is_reported_not_silent():
+    gh = GitHubClient("o/r", transport=httpx.MockTransport(
+        lambda r: httpx.Response(403, headers={"x-ratelimit-remaining": "0"})))
+    gh.fetch(None, 10, 10, [])
+    assert any("rate limit" in w for w in gh.warnings)

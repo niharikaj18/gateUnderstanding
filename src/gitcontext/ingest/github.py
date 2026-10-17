@@ -21,17 +21,20 @@ class GitHubClient:
                    "User-Agent": "gitcontext"}
         if token:
             headers["Authorization"] = f"Bearer {token}"
+        self.warnings: list[str] = []
         self.http = httpx.Client(base_url=API, headers=headers, timeout=30, transport=transport)
 
     def _get(self, url: str, params: dict | None = None) -> httpx.Response | None:
         for attempt in range(3):
             r = self.http.get(url, params=params)
             if r.status_code in (403, 429) and r.headers.get("x-ratelimit-remaining") == "0":
-                return None  # rate limited: degrade gracefully, caller keeps what it has
+                self.warnings.append("GitHub rate limit exhausted (set GITHUB_TOKEN); PR/issue data may be partial")
+                return None  # degrade gracefully, caller keeps what it has
             if r.status_code >= 500:
                 time.sleep(1.5 * (attempt + 1))
                 continue
             if r.status_code >= 400:
+                self.warnings.append(f"GitHub API {r.status_code} for {url}")
                 return None
             return r
         return None
@@ -97,6 +100,7 @@ class GitHubClient:
     def fetch(self, since: str | None, max_prs: int, max_issues: int, incident_labels: list[str],
               max_chars: int = 2400) -> list[Chunk]:
         labels_l = {x.strip().lower() for x in incident_labels}
+        self.warnings.clear()
         out: list[Chunk] = []
         for pr in self._paged(f"/repos/{self.slug}/pulls",
                               {"state": "all", "sort": "updated", "direction": "desc"}, max_prs):

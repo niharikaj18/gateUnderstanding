@@ -124,6 +124,7 @@ class Indexer:
         except Exception as e:  # network/auth issues must not break code indexing
             report.notes.append(f"github skipped: {e}")
             return
+        report.notes += list(dict.fromkeys(self.github.warnings))
         self._write(items)
         report.github_items += len(items)
         report.chunks_written += len(items)

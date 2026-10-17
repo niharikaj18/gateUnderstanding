@@ -42,7 +42,9 @@ class Settings(BaseSettings):
 
     # retrieval
     retrieve_k: int = 40
-    rerank_k: int = 30
+    rerank_k: int = 20
+    rerank_blend: float = 0.2  # 1.0 = reranker decides alone; 0.0 = ignore it; in between = RRF-blend with fused rank
+    rerank_max_chars: int = 1200  # cross-encoder cost grows with input length; 1200 chars ~ 300 tokens
     final_k: int = 8
     max_chunks_per_file: int = 3
     context_char_budget: int = 24000

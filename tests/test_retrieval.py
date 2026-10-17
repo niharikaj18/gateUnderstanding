@@ -48,3 +48,24 @@ def test_source_and_path_filters(engine):
 def test_all_source_types_indexed(engine):
     counts = engine.status()["chunks"]
     assert {"code", "doc", "incident", "commit"} <= set(counts)
+
+
+class _Reverse:
+    """Fake reranker that prefers whatever hybrid ranked last."""
+    name = "reverse"
+
+    def score(self, query, chunks):
+        return [float(i) for i in range(len(chunks))]
+
+
+def test_rerank_blend_controls_how_much_reranker_overrides(engine):
+    q = "charge_customer retry payment gateway"
+    engine.retriever.reranker = _Reverse()
+    engine.s.max_chunks_per_file = 99  # disable diversity cap so we compare pure ordering
+    engine.s.rerank_blend = 0.0
+    base = [h.chunk.id for h in engine.search(q, rerank=False, top_k=50).hits]
+    ignored = [h.chunk.id for h in engine.search(q, rerank=True, top_k=50).hits]
+    assert len(base) > 2 and ignored == base  # blend 0 => reranker has no say
+    engine.s.rerank_blend = 1.0
+    full = [h.chunk.id for h in engine.search(q, rerank=True, top_k=50).hits]
+    assert full == base[::-1]  # blend 1 => reranker fully decides

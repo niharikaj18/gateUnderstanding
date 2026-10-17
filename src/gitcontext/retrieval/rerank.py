@@ -17,14 +17,15 @@ class Reranker(Protocol):
 
 
 class CrossEncoderReranker:
-    def __init__(self, model: str):
+    def __init__(self, model: str, max_chars: int = 1200):
         from fastembed.rerank.cross_encoder import TextCrossEncoder
 
         self.name = f"cross-encoder:{model}"
+        self.max_chars = max_chars
         self._m = TextCrossEncoder(model)
 
     def score(self, query, chunks):
-        docs = [c.embed_text()[:2000] for c in chunks]
+        docs = [c.embed_text()[: self.max_chars] for c in chunks]
         return [float(x) for x in self._m.rerank(query, docs)]
 
 
@@ -52,4 +53,4 @@ def make_reranker(s: Settings) -> Reranker | None:
         return None
     if s.reranker == "lexical":
         return LexicalReranker()
-    return CrossEncoderReranker(s.reranker_model)
+    return CrossEncoderReranker(s.reranker_model, s.rerank_max_chars)

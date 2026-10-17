@@ -94,6 +94,13 @@ class Retriever:
             scores = self.reranker.score(query, [h.chunk for h in hits])
             for h, sc in zip(hits, scores):
                 h.rerank_score, h.score = sc, sc
+            a = s.rerank_blend
+            if a < 1.0:
+                # Blend: don't let a general-purpose reranker fully override exact-match evidence.
+                # `hits` is currently in fused order; combine fused rank and reranker rank with RRF.
+                rr_rank = {id(h): r for r, h in enumerate(sorted(hits, key=lambda h: h.rerank_score, reverse=True), 1)}
+                for fr, h in enumerate(hits, 1):
+                    h.score = (1 - a) / (RRF_K + fr) + a / (RRF_K + rr_rank[id(h)])
             hits.sort(key=lambda h: h.score, reverse=True)
             reranked = True
             t["rerank"] = (time.perf_counter() - t0) * 1000

@@ -36,7 +36,7 @@ flowchart LR
 | Chunk by function/class/module, not token counts | `ingest/chunker.py`: Python **AST**; brace-depth scanner for JS/TS/Go/Java/Kotlin/C#/Rust/C/C++/PHP/Scala/Swift; indentation for Ruby; Markdown/RST by **heading path**. Only oversize units are windowed |
 | Embeddings → vector DB | `index/embeddings.py` (fastembed `bge-small` local, OpenAI, offline hash) → `index/vectorstore.py` (**Qdrant**: embedded, in-memory or server) behind a 5-method `VectorStore` protocol |
 | Hybrid retrieval | `retrieval/hybrid.py`: dense + **BM25** (SQLite FTS5, identifier-aware) + **exact phrase** (error messages) + **exact symbol**, fused with weighted **RRF** |
-| Reranking | `retrieval/rerank.py`: cross-encoder (`ms-marco-MiniLM`) over the fused top-30, per-file diversity cap |
+| Reranking | `retrieval/rerank.py`: cross-encoder (`ms-marco-MiniLM`) over the fused top-20, blended with fused rank, per-file diversity cap. **Measured: no gain on this benchmark — see Evaluation** |
 | Metadata | every chunk carries file path, lines, symbol, language, last author, last-modified date, last commit SHA, PR number, blob SHA, URL, top authors |
 | Stale detection + auto re-index | manifest of `(path, blob SHA)`; `sync` re-indexes only changed/added files, drops deleted ones, appends new commits, pulls PR/issue updates. Triggers: `gitcontext watch`, API poller, `POST /webhook/github` (HMAC), `sync_on_query`; answers also flag **stale cited files** |
 | FastAPI + web/CLI | `api.py`, `cli.py` (Typer), `ui/streamlit_app.py` |
@@ -93,7 +93,7 @@ and an exact-symbol lookup — and BM25 indexes identifiers both whole *and* spl
 are fused with weighted RRF (exact signals weigh more when present). RRF needs no score calibration across
 incomparable scorers.
 
-**Reranking.** The fused top-30 is rescored jointly (query, chunk) by a cross-encoder, then capped at 3 chunks per
+**Reranking.** The fused top-20 is rescored jointly (query, chunk) by a cross-encoder, blended with the fused ranking (`rerank_blend`, see Evaluation for why it is not pure), then capped at 3 chunks per
 file so one large module can't crowd out the PR that explains *why*.
 
 **History as a first-class source.** Commits, PR threads (description + comments + reviews) and incident reports
@@ -126,7 +126,49 @@ gitcontext eval run --answers            # + answer correctness & citation accur
 Question families: `semantic` (docstring paraphrase, symbol name masked → dense-favoured), `exact_error` (literal
 `raise X("…")` text → lexical-favoured), `symbol`, `history` (commit subjects), `doc` (section headings).
 
-EVAL_RESULTS_PLACEHOLDER
+### Results: Pallets Click @ `2247b35`, 60 synthetic questions (12 per family)
+
+Real models (`bge-small-en-v1.5`, `ms-marco-MiniLM-L-6-v2`), embedded Qdrant, **single CPU core**.
+Raw artifacts: [`docs/eval-click/`](docs/eval-click).
+
+| config | R@1 | R@3 | R@5 | R@10 | P@5 | MRR | nDCG@10 | p50 ms | p95 ms |
+|---|---|---|---|---|---|---|---|---|---|
+| dense | 0.617 | 0.817 | 0.900 | 0.917 | 0.180 | 0.730 | 0.777 | 25 | 32 |
+| bm25 | 0.850 | 0.967 | 1.000 | 1.000 | 0.200 | 0.914 | 0.936 | 3 | 6 |
+| **hybrid (RRF)** | **0.867** | **0.983** | 1.000 | 1.000 | 0.200 | **0.926** | **0.945** | 26 | 34 |
+| hybrid + rerank (pure cross-encoder) | 0.733 | 0.883 | 0.933 | 0.967 | 0.187 | 0.818 | 0.854 | 3636 | 5038 |
+
+(P@5 is capped at 0.2 because each question has one gold chunk.)
+
+**What this shows**
+
+* Hybrid retrieval is the best configuration and clearly beats dense-only (MRR 0.926 vs 0.730). Dense retrieval alone
+  misses exact identifiers and error strings; BM25 alone has nothing to offer on paraphrased intent. Fusion keeps both.
+* **The off-the-shelf cross-encoder did not help — it hurt.** `ms-marco-MiniLM` is trained on web passages, not code; it
+  demoted chunks that the exact-symbol and phrase rankers had correctly put first (symbol MRR fell to 0.55).
+* I therefore added `rerank_blend` (RRF-mix of fused rank and reranker rank) and tuned it on half the questions,
+  evaluating on the other half ([`rerank_blend_tuning.json`](docs/eval-click/rerank_blend_tuning.json)):
+
+  | blend | 0.0 (no rerank) | 0.2 | 0.5 | 1.0 (pure) |
+  |---|---|---|---|---|
+  | held-out MRR | **0.919** | 0.911 | 0.872 | 0.732 |
+
+  No blend beat skipping the reranker on held-out data (the best blend on the tuning half, 0.5, was worse on the
+  held-out half — noise, not signal). The default is `0.2`, which is near-neutral. **On this benchmark reranking costs
+  ~3.6 s/query (single core) for no measured gain.** Set `GITCONTEXT_RERANKER=none` to skip it, or evaluate a
+  code-aware reranker (any fastembed-supported cross-encoder via `GITCONTEXT_RERANKER_MODEL`) on your own questions.
+  A reranker may still help on natural-language questions that this synthetic set under-represents — that is untested.
+* Latency: hybrid retrieval is ~26 ms p50 (query embedding ≈ 18 ms, dense ≈ 5 ms, lexical ≈ 3 ms). Generation adds
+  LLM time on top. Indexing this repo (2,248 chunks) took 977 s on one core, almost all of it embedding.
+
+**Not measured:** answer correctness and citation accuracy with a real LLM (no API key was available when this was
+built; the harness is unit-tested with stub models — run `gitcontext eval run --answers` with a key), and live
+GitHub PR/issue ingestion (only tested against mocked API responses).
+
+**Caveats on these numbers:** questions are synthetic, single-gold, and `symbol`/`doc`/`history` questions share
+vocabulary with their answers (favouring BM25). A valid alternative chunk (e.g. a test containing the same error string)
+counts as a miss. Treat the ablation as a regression harness and relative comparison, not an absolute quality score.
+
 
 ## Layout
 
