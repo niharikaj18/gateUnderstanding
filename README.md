@@ -250,3 +250,4 @@ tests/          chunking · retrieval · freshness (git-level) · API/webhook ·
 * The synthetic eval set has lexical leakage for `symbol`/`doc`/`history` questions by construction; use it for regression
   tracking and ablations, and add hand-written questions for absolute quality claims.
 * Answer-level metrics that use an LLM judge are only as good as the judge; citation *support* is a lexical proxy.
+# gateUnderstanding
