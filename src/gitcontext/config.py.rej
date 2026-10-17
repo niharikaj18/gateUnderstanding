@@ -1,0 +1,13 @@
+diff a/src/gitcontext/config.py b/src/gitcontext/config.py	(rejected hunks)
+@@ -49,6 +49,11 @@ class Settings(BaseSettings):
+     max_chunks_per_file: int = 3
+     context_char_budget: int = 24000
+ 
++    # deployment
++    api_key: str | None = None  # if set, every endpoint except /health and the HMAC webhook needs `x-api-key`
++    cors_origins: str = ""  # comma-separated origins allowed to call the API from a browser
++    auto_index_on_start: bool = False  # index in the background on boot if the repo isn't indexed yet
++
+     # freshness
+     auto_sync_seconds: int = 0
+     sync_on_query: bool = False
