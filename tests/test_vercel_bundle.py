@@ -59,3 +59,12 @@ def test_cli_sync_on_empty_index_does_a_full_first_index(repo, tmp_path, monkeyp
     assert res.exit_code == 0, res.output
     report = json.loads(res.output[res.output.index("{"):])
     assert report["files_added"] >= 4 and report["chunks_written"] > 5 and report["commits_added"] >= 1
+
+
+def test_no_runner_context_in_job_level_env():
+    """GitHub rejects `runner.*` in job-level `env` ("Unrecognized named-value"); it only exists inside steps."""
+    yaml = __import__("pytest").importorskip("yaml")
+    for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
+        for name, job in yaml.safe_load(wf.read_text())["jobs"].items():
+            for k, v in (job.get("env") or {}).items():
+                assert "runner." not in str(v), f"{wf.name}: job '{name}' env {k} uses the runner context"

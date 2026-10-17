@@ -27,13 +27,13 @@ jobs:
       GITHUB_TOKEN: ${{ secrets.GH_PAT || secrets.GITHUB_TOKEN }}                             # PAT only needed for other/private repos
       GITCONTEXT_RERANKER: none
       GITCONTEXT_LLM_PROVIDER: none
-      GITCONTEXT_MODEL_CACHE_DIR: ${{ runner.temp }}/fastembed
+      GITCONTEXT_MODEL_CACHE_DIR: /tmp/fastembed   # (the `runner` context is not allowed in job-level env)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
       - uses: actions/cache@v4
-        with: { path: "${{ runner.temp }}/fastembed", key: fastembed-bge-small-en-v1.5 }
+        with: { path: /tmp/fastembed, key: fastembed-bge-small-en-v1.5 }
       - run: pip install ".[local]"
       - name: Index (first run = full index, afterwards incremental)
         run: |
