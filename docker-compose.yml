@@ -1,0 +1,24 @@
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports: ["6333:6333"]
+    volumes: ["qdrant_data:/qdrant/storage"]
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      GITCONTEXT_QDRANT_URL: http://qdrant:6333
+      GITCONTEXT_AUTO_SYNC_SECONDS: "120"
+    depends_on: [qdrant]
+    ports: ["8000:8000"]
+    volumes: ["gc_data:/data"]
+
+  ui:
+    build: .
+    command: ["python", "-m", "streamlit", "run", "/usr/local/lib/python3.12/site-packages/gitcontext/ui/streamlit_app.py",
+              "--server.port=8501", "--server.address=0.0.0.0", "--", "--api", "http://api:8000"]
+    depends_on: [api]
+    ports: ["8501:8501"]
+
+volumes: { qdrant_data: {}, gc_data: {} }

@@ -1,0 +1,13 @@
+# Optional: keep a hosted GitContext in sync on every push by calling its webhook endpoint.
+# Alternative: configure a GitHub webhook (push, pull_request, issues) -> https://<host>/webhook/github
+name: notify-gitcontext
+on: { push: { branches: [main] } }
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    if: ${{ vars.GITCONTEXT_URL != '' }}
+    steps:
+      - run: |
+          body='{"ref":"${{ github.ref }}"}'
+          sig="sha256=$(printf '%s' "$body" | openssl dgst -sha256 -hmac '${{ secrets.GITCONTEXT_WEBHOOK_SECRET }}' | sed 's/^.* //')"
+          curl -fsS -X POST "${{ vars.GITCONTEXT_URL }}/webhook/github" -H "x-github-event: push" -H "x-hub-signature-256: $sig" -d "$body"
