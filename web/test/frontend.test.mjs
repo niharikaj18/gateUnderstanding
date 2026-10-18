@@ -107,7 +107,7 @@ test("clicking a citation chip opens its evidence card", async () => {
 test("API errors are shown, with a hint for 401", async () => {
   const ctx = await boot({ failQuery: 401 }); await ask(ctx, "x?");
   const e = ctx.d.querySelector(".a.err");
-  assert.match(e.textContent, /401.*boom.*BACKEND_API_KEY/);
+  assert.match(e.textContent, /401.*boom.*Deployment Protection.*BACKEND_API_KEY/);
 });
 
 test("settings persist and custom API base is used", async () => {

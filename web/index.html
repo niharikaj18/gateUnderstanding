@@ -177,7 +177,7 @@ async function api(path, opts = {}) {
   try { data = await r.json(); } catch { /* non-JSON error body */ }
   if (!r.ok) {
     const detail = data && (typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail));
-    const hint = r.status === 401 ? " (the proxy’s BACKEND_API_KEY doesn’t match the backend’s GITCONTEXT_API_KEY)" : "";
+    const hint = r.status === 401 ? " (all-Vercel deployment: Vercel Deployment Protection blocked the request, so open the site via its protected URL and sign in; web/ proxy + backend: the proxy’s BACKEND_API_KEY doesn’t match the backend’s GITCONTEXT_API_KEY, so fix it and redeploy)" : "";
     throw new Error(`${r.status}: ${detail || r.statusText}${hint}`);
   }
   return data;
